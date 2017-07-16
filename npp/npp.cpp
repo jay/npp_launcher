@@ -25,7 +25,7 @@ using namespace std;
 #define DEBUGMSG(streamargs) \
   do { \
     wstringstream ss_d_; \
-    ss_d_ << "npp launcher: " << streamargs; \
+    ss_d_ << "npp launcher: " << streamargs << "\n"; \
     OutputDebugStringW(ss_d_.str().c_str()); \
   } WHILE_FALSE;
 #else
