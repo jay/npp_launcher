@@ -1,0 +1,167 @@
+Programming notes
+
+===============================================================================
+Stealing focus works by minimizing and restoring the Notepad++ window, which
+should cause it to obtain foreground window privileges when it's missing them.
+The Notepad++ window should then become the foreground window or we call
+SetForegroundWindow to make it so.
+
+The restoration process is very deliberate. SwitchToThisWindow is called to
+simulate ALT+TAB ordering of the window, and it should restore the window as
+part of that process. It's possible that SwitchToThisWindow may not restore the
+window, for example when the Notepad++ window is disabled (likely due to some
+enabled popup it owns). In that case the window is still minimized and the
+restoration must be done via ShowWindow SW_RESTORE. SW_RESTORE in this scenario
+must not be called unless the window is minimized because if it was already
+restored as maximized then SW_RESTORE would restore the un-maximized size.
+
+===============================================================================
+Steal focus - race condition
+
+If Notepad++ is running as a mono-instance and is already open then the second
+instance that is started calls SetForegroundWindow on the first's main
+window and then terminates. That happens even if the main window is disabled
+due to a popup. At the same time that happens we are trying to set the
+foreground window to the enabled popup if the main window is disabled.
+Therefore either whichever window is set foreground last is the winner.
+
+To remedy this issue I've added SetForegroundWindowTryHarder and flag
+SFW_ENFORCE which attempts to enforce a foreground window for a short period of
+time.
+
+===============================================================================
+Steal focus - an experiment
+
+(Note some of this is outdated and before I added SetForegroundWindowTryHarder)
+
+I experimented with calling SW_RESTORE always before calling
+SwitchToThisWindow. That is ok to do and doesn't un-maximize a window but has
+a problem, there may be some effect on the foreground window. Following the
+example described above assume a target window 'hTarget' of a Notepad++ popup
+(eg 'Create?' a file message box) that has disabled the main Notepad++ window
+'hwnd'. Switching to 'hwnd' and then setting foreground to 'hTarget' may have
+the result that the foreground "active" is the disabled 'hwnd' and not
+'hTarget' which is undesirable since 'hwnd' is disabled and 'hTarget' is not.
+
+As described in the previous section this is likely due to a race condition
+between Notepad++ and this program. In that case GetForegroundWindow may return
+'hTarget' even though the foreground window being shown is actually 'hwnd', and
+an immediate SetForegroundWindow for 'hTarget' will have no effect (thinking
+it's already the foreground window).
+
+However after less than a second the window manager will realize that and
+GetForegroundWindow will properly return what is the foreground window, 'hwnd'.
+Then at that point SetForegroundWindow can be called on 'hTarget' and it will
+set it as the foreground window. So there appears to be some "lag" as the
+window manager updates the foreground window.
+
+To reproduce the scenario described above:
+- Add a sleep delay of 3000 at the beginning of the
+  SwitchToNotepadPlusPlusWindow function.
+- Move SwitchToThisWindow after the SW_RESTORE if-block.
+- After the last SetForegroundWindow call add a GetForegroundWindow, then a
+  sleep delay of 3000 then GetForegroundWindow followed by SetForegroundWindow
+  hTarget. Add some DEBUGMSGs.
+- Rebuild npp.
+- Cause a popup in Notepad++ which disables the main window (eg 'Create?' a
+  file message box) and leave it open.
+- Open a command prompt at the npp Debug output dir and run npp _without_ any
+  arguments (so another 'Create?' isn't possibly shown).
+- Quickly switch back to the command prompt during sleep delay and select some
+  text or do something to appear active, type keys etc.
+- Observe the window minimize and restore within the several seconds. If this
+  does not happen then focus did not need to be stolen so repeat multiple times
+  until it does.
+- Observe as focus is stolen that the foreground belongs to the disabled main
+  window even though GetForegroundWindow returns the popup. Then, wait 3
+  seconds to observe the popup become the foreground window  because the
+  SetForegroundWindow call after the 3 seconds properly sets the foreground
+  window.
+- Review DebugView output, which will look like this (annotated):
+  -
+  [2936] npp launcher: GetForegroundWindow: 004C107A (GA_ROOTOWNER: 004C107A)
+  [2936] npp launcher: Notepad++ window: 00290DFA (GW_ENABLEDPOPUP: 003116F8)
+  [2936] npp launcher: Target window: 003116F8
+  [2936] npp launcher: IsWindowEnabled: TRUE
+  [2936] npp launcher: SetForegroundWindow: FALSE
+  [2936] npp launcher: Attempting to steal focus
+  [2936] npp launcher: ShowWindow SW_MINIMIZE: TRUE
+  [2936] npp launcher: ShowWindow SW_RESTORE: TRUE
+  [2936] npp launcher: SwitchToThisWindow
+  [2936] npp launcher: IsIconic hwnd: FALSE
+  [2936] npp launcher: IsIconic hTarget: FALSE
+  -
+  [2936] npp launcher: GetForegroundWindow: 003116F8
+  At this point GetForegroundWindow has returned the target window as the
+  foreground even though what Windows is showing me as the foreground is the
+  disabled Notepad++ window, and the target window though visible isn't active.
+  -
+  [2936] npp launcher: SetForegroundWindow: TRUE
+  At this point SetForegroundWindow has been called with the target window but
+  does nothing since the window manager already thinks that's the foreground
+  window.
+  -
+  [2936] npp launcher: GetForegroundWindow: 00290DFA
+  At this point 3 seconds has passed and GetForegroundWindow returns what is
+  actually being shown as the foreground window.
+  -
+  [2936] npp launcher: SetForegroundWindow: TRUE
+  At this point SetForegroundWindow has again been called with the target
+  window and this time makes it the foreground window.
+  -
+  [2936] npp launcher: GetForegroundWindow: 00290DFA
+  At this point GetForegroundWindow still returns the previous foreground
+  window because there appears to be a slight "lag" setting the foreground
+  window.
+  -
+
+===============================================================================
+May take up to a second for the foreground window to change:
+
+[5768] npp launcher: GetForegroundWindow: 004C107A (GA_ROOTOWNER: 004C107A)
+[5768] npp launcher: Notepad++ window: 00290DFA (GW_ENABLEDPOPUP: 00931120)
+[5768] npp launcher: Target window: 00931120
+[5768] npp launcher: IsWindowEnabled: TRUE
+[5768] npp launcher: start: 604308671, elapsed: 0, remaining: 3000
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 94, remaining: 2906
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 204, remaining: 2796
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 297, remaining: 2703
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 407, remaining: 2593
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 500, remaining: 2500
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 610, remaining: 2390
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 704, remaining: 2296
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 813, remaining: 2187
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 907, remaining: 2093
+[5768] npp launcher: GetForegroundWindow(): 004C107A
+[5768] npp launcher: start: 604308671, elapsed: 1016, remaining: 1984
+[5768] npp launcher: start: 604308671, elapsed: 1110, remaining: 1890
+[5768] npp launcher: start: 604308671, elapsed: 1219, remaining: 1781
+[5768] npp launcher: start: 604308671, elapsed: 1313, remaining: 1687
+[5768] npp launcher: start: 604308671, elapsed: 1422, remaining: 1578
+[5768] npp launcher: start: 604308671, elapsed: 1516, remaining: 1484
+[5768] npp launcher: start: 604308671, elapsed: 1610, remaining: 1390
+[5768] npp launcher: start: 604308671, elapsed: 1719, remaining: 1281
+[5768] npp launcher: start: 604308671, elapsed: 1813, remaining: 1187
+[5768] npp launcher: start: 604308671, elapsed: 1922, remaining: 1078
+[5768] npp launcher: start: 604308671, elapsed: 2016, remaining: 984
+[5768] npp launcher: start: 604308671, elapsed: 2125, remaining: 875
+[5768] npp launcher: start: 604308671, elapsed: 2219, remaining: 781
+[5768] npp launcher: start: 604308671, elapsed: 2329, remaining: 671
+[5768] npp launcher: start: 604308671, elapsed: 2422, remaining: 578
+[5768] npp launcher: start: 604308671, elapsed: 2516, remaining: 484
+[5768] npp launcher: start: 604308671, elapsed: 2625, remaining: 375
+[5768] npp launcher: start: 604308671, elapsed: 2719, remaining: 281
+[5768] npp launcher: start: 604308671, elapsed: 2829, remaining: 171
+[5768] npp launcher: start: 604308671, elapsed: 2922, remaining: 78
+[5768] npp launcher: SetForegroundWindowAndWait: TRUE
+
+===============================================================================

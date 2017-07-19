@@ -87,6 +87,9 @@
     <ClInclude Include="ExecInExplorer-mod\ExecInExplorer-mod\ExecInExplorer_Implementation.h" />
     <ClInclude Include="ExecInExplorer-mod\ExecInExplorer-mod\ExecInExplorer_Util.h" />
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="npp NOTES.txt" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
