@@ -3,8 +3,18 @@ Copyright (C) 2017 Jay Satiro <raysatiro@yahoo.com>
 https://github.com/jay/npp_launcher/blob/master/LICENSE
 */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS
+#endif
+
 #include <windows.h>
 
+#include <io.h>
+#include <stdio.h>
+#include <time.h>
+
+#include <iomanip>
+#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -12,6 +22,9 @@ https://github.com/jay/npp_launcher/blob/master/LICENSE
 #include "ExecInExplorer_Implementation.h"
 
 using namespace std;
+
+DWORD pid;
+wofstream logfile;
 
 #define WHILE_FALSE \
   __pragma(warning(push)) \
@@ -26,12 +39,44 @@ using namespace std;
   do { \
     wstringstream ss_d_; \
     ss_d_ << "npp launcher: " << streamargs << "\n"; \
-    OutputDebugStringW(ss_d_.str().c_str()); \
+    const wstring& str_d_ = ss_d_.str(); \
+    OutputDebugStringW(str_d_.c_str()); \
+    if(logfile) { \
+      SYSTEMTIME st_d_ = { 0, }; \
+      GetLocalTime(&st_d_); \
+      logfile << "[" << SystemTimeStr(&st_d_).c_str() << "]: " \
+              << "[" << pid << "] " << ss_d_.str(); \
+      logfile.flush(); \
+    } \
   } WHILE_FALSE
 #else
 #define DEBUGMSG(streamargs)
 #endif
 
+
+/* system time in format: Tue May 16 03:24:31.123 PM */
+string SystemTimeStr(const SYSTEMTIME *t)
+{
+  const char *dow[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+  const char *mon[] = { NULL, "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+  stringstream ss;
+
+  unsigned t_12hr = (t->wHour > 12 ? t->wHour - 12 : t->wHour ? t->wHour : 12);
+  const char *t_ampm = (t->wHour < 12 ? "AM" : "PM");
+
+  ss.fill('0');
+  ss << dow[t->wDayOfWeek] << " "
+     << mon[t->wMonth] << " "
+     << setw(2) << t->wDay << " "
+     << setw(2) << t_12hr << ":"
+     << setw(2) << t->wMinute << ":"
+     << setw(2) << t->wSecond << "."
+     << setw(3) << t->wMilliseconds << " "
+     << t_ampm;
+
+  return ss.str();
+}
 
 /*
 Attempt to set the foreground window for a short period of time.
@@ -238,6 +283,20 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, const PWSTR cmdline, int)
 {
   HRESULT hr;
   WCHAR *dir;
+
+  pid = GetCurrentProcessId();
+
+  WCHAR tempdir[MAX_PATH + 1];
+  DWORD rc = GetEnvironmentVariableW(L"TEMP", tempdir, _countof(tempdir));
+  if(rc && rc < _countof(tempdir)) {
+    wstring path(tempdir);
+    if(*path.rbegin() != '\\' && *path.rbegin() != '/')
+      path += '\\';
+    path += L"npp_launcher.log";
+    // if the logfile exists, open it for append
+    if(path.length() < MAX_PATH && !_waccess_s(path.c_str(), 2))
+      logfile.open(path, wofstream::app);
+  }
 
   if(!GetCurrentDir_ThreadUnsafe(&dir))
     return -1;
