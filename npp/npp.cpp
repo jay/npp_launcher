@@ -13,8 +13,8 @@ https://github.com/jay/npp_launcher/blob/master/LICENSE
 #include <stdio.h>
 #include <time.h>
 
-#include <iomanip>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <vector>
 
@@ -76,6 +76,48 @@ string SystemTimeStr(const SYSTEMTIME *t)
      << t_ampm;
 
   return ss.str();
+}
+
+void DebugDumpWindowInfo(HWND hWnd)
+{
+#ifndef USE_DEBUGMSG
+  return;
+#else
+#define PRINTPOINT(point) \
+  DEBUGMSG("HWND " << hWnd << " " #point << ": " << \
+           "(" << point.x << ", " << point.y << ")");
+
+#define PRINTRECT(rect) \
+  DEBUGMSG("HWND " << hWnd << " " #rect << ": " << \
+           "(" << rect.left << ", " << rect.top << ")-" << \
+           "(" << rect.right << ", " << rect.bottom << ")");
+
+  WINDOWPLACEMENT wp = {sizeof(wp),};
+  if(GetWindowPlacement(hWnd, &wp)) {
+    const char *showstr;
+    switch(wp.showCmd) {
+    case SW_SHOWMAXIMIZED: showstr = "SW_SHOWMAXIMIZED"; break;
+    case SW_SHOWMINIMIZED: showstr = "SW_SHOWMINIMIZED"; break;
+    case SW_SHOWNORMAL: showstr = "SW_SHOWNORMAL"; break;
+    default: showstr = "<unknown>"; break;
+    }
+    DEBUGMSG("HWND " << hWnd << " wp.showCmd: " << showstr);
+    PRINTPOINT(wp.ptMaxPosition);
+    PRINTPOINT(wp.ptMinPosition);
+    PRINTRECT(wp.rcNormalPosition);
+  }
+
+  RECT window_rect;
+  if(GetWindowRect(hWnd, &window_rect))
+    PRINTRECT(window_rect);
+
+  RECT client_rect;
+  if(GetClientRect(hWnd, &client_rect))
+    PRINTRECT(client_rect);
+
+  DEBUGMSG("HWND " << hWnd << " MonitorFromWindow: " <<
+           MonitorFromWindow(hWnd, MONITOR_DEFAULTTONULL));
+#endif // USE_DEBUGMSG
 }
 
 /*
@@ -152,13 +194,44 @@ void SwitchToNotepadPlusPlusWindow(void)
     (VOID (WINAPI *)(HWND, BOOL))GetProcAddress(GetModuleHandleW(L"user32"),
                                                 "SwitchToThisWindow");
 
+  /* 'verification_delay' is the number of milliseconds to wait for the most
+     recently found Notepad++ owner window to stay the same, so that Notepad++
+     has a chance to load and put itself in the foreground on its own. This
+     also makes focusing on an initially found window from an earlier
+     multi-instance less likely. The delay should be short because if Notepad++
+     doesn't put itself in the foreground then we want to step in before the
+     user thinks they have to. */
+  const DWORD verification_delay = 1000;
+  HWND prev_hwnd = NULL;  /* The most recently found Notepad++ owner window */
+  DWORD prev_hwnd_start = 0;  /* The tickcount when prev_hwnd was set */
+
+  /* The maximum wait time is a rough estimate and there are various waits that
+     may push it over a little. At a minimum enough time is needed so that the
+     loop can complete a full iteration to set the foreground window. */
+  const DWORD max_wait = dwMilliseconds + (verification_delay * 2) + interval;
+
   DWORD start = GetTickCount();
 
-  for(DWORD elapsed = 0; elapsed <= dwMilliseconds;
+  for(DWORD elapsed = 0; elapsed <= max_wait;
       elapsed = GetTickCount() - start) {
     /* GetTickCount operates at the resolution of the system clock and it may
        return the same result on subsequent calls. */
-    DWORD remaining = dwMilliseconds - elapsed;
+    DWORD remaining = max_wait - elapsed;
+
+    /* for an iteration of this loop to complete successfully at the very least
+       we'll need time to complete the verification delay, otherwise there's no
+       point in continuing. */
+    DWORD needed;
+
+    if(prev_hwnd) {
+      DWORD x = (GetTickCount() - prev_hwnd_start);
+      needed = (verification_delay > x ? verification_delay - x : 0);
+    }
+    else
+      needed = verification_delay;
+
+    if(remaining < needed)
+      break;
 
     Sleep(remaining < interval ? remaining : interval);
 
@@ -194,6 +267,15 @@ void SwitchToNotepadPlusPlusWindow(void)
         continue;
     }
 
+    if(hwnd != prev_hwnd) {
+      prev_hwnd = hwnd;
+      prev_hwnd_start = GetTickCount();
+      continue;
+    }
+
+    if(verification_delay > (GetTickCount() - prev_hwnd_start))
+      continue;
+
     DEBUGMSG("GetForegroundWindow: " << hFore <<
              " (GA_ROOTOWNER: " << hForeRootOwner << ")");
 
@@ -225,13 +307,20 @@ void SwitchToNotepadPlusPlusWindow(void)
     DEBUGMSG("IsWindowEnabled: " <<
              (IsWindowEnabled(hTarget) ? "TRUE" : "FALSE"));
 
-    /* Enforce hTarget as the foreground window for 300ms.
+    DWORD lt = (DWORD)-1;
+    if(SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lt, 0))
+      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: " << lt <<
+               " (" << lt / 1000 << " seconds)");
+    else
+      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: <unavailable>");
+
+    /* Enforce hTarget as the foreground window for 100ms.
        This is to remedy a race condition with Notepad++ where it may set the
        disabled main window of a previously existing mono-instance to the
        foreground while at the same time this program is trying to set the
        foreground to the Notepad++ enabled popup that has disabled the main
        window. */
-    if(SetForegroundWindowTryHarder(hTarget, 300, SFW_ENFORCE)) {
+    if(SetForegroundWindowTryHarder(hTarget, 100, SFW_ENFORCE)) {
       DEBUGMSG("SetForegroundWindowTryHarder SFW_ENFORCE: TRUE");
       if(!IsIconic(hwnd) && !IsIconic(hTarget))
         break;
@@ -242,14 +331,33 @@ void SwitchToNotepadPlusPlusWindow(void)
     // steal focus: minimize and then restore in alt+tab style.
     DEBUGMSG("Attempting to steal focus");
 
+    DebugDumpWindowInfo(hwnd);
+
     if(!IsIconic(hwnd)) {
       BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
       DEBUGMSG("ShowWindow SW_MINIMIZE: " << (b ? "TRUE" : "FALSE"));
+      DebugDumpWindowInfo(hwnd);
     }
 
     if(SwitchToThisWindow) {
       SwitchToThisWindow(hwnd, TRUE);
       DEBUGMSG("SwitchToThisWindow");
+      DebugDumpWindowInfo(hwnd);
+    }
+
+    /* Recover from race condition. At the same time we minimize the window
+       it's possible Notepad++ restored itself, and the window manager gets
+       confused and thinks it's not minimized even though it somewhat is since
+       it's not visible on any monitor (-32000, -32000). In that case minimize
+       the window again so that it can be restored properly. For details refer
+       to "npp NOTES.txt" */
+    BOOL beep = FALSE;
+    if(!IsIconic(hwnd) && !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
+      DEBUGMSG("Minimizing again to recover from race condition");
+      BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
+      DEBUGMSG("ShowWindow SW_MINIMIZE: " << (b ? "TRUE" : "FALSE"));
+      DebugDumpWindowInfo(hwnd);
+      //beep = TRUE;
     }
 
     /* Restore the window if necessary. SwitchToThisWindow should have already
@@ -257,10 +365,15 @@ void SwitchToNotepadPlusPlusWindow(void)
        some reason. For example I observe it doesn't always restore if hwnd is
        disabled (likely due to a popup), but SW_RESTORE does work. For details
        refer to "npp NOTES.txt" */
-    if(!SwitchToThisWindow || IsIconic(hwnd)) {
+    if(!SwitchToThisWindow || IsIconic(hwnd) ||
+       !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
       BOOL b = ShowWindow(hwnd, SW_RESTORE);
       DEBUGMSG("ShowWindow SW_RESTORE: " << (b ? "TRUE" : "FALSE"));
+      DebugDumpWindowInfo(hwnd);
     }
+
+    if(beep)
+      Beep(750, 300);
 
     DEBUGMSG("IsIconic Notepad++ window: " <<
              (IsIconic(hwnd)? "TRUE" : "FALSE"));
@@ -268,11 +381,18 @@ void SwitchToNotepadPlusPlusWindow(void)
              (IsIconic(hTarget)? "TRUE" : "FALSE"));
     DEBUGMSG("GetForegroundWindow: " << GetForegroundWindow());
 
-    // Try for up to 2 seconds to make hTarget the foreground window
-    if(SetForegroundWindowTryHarder(hTarget, 2000, SFW_CONFIRM))
-      DEBUGMSG("SetForegroundWindowTryHarder SFW_CONFIRM: TRUE");
+    lt = (DWORD)-1;
+    if(SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lt, 0))
+      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: " << lt <<
+               " (" << lt / 1000 << " seconds)");
     else
-      DEBUGMSG("SetForegroundWindowTryHarder SFW_CONFIRM: FALSE");
+      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: <unavailable>");
+
+    // Try for up to 2 seconds to make hTarget the foreground window
+    if(SetForegroundWindowTryHarder(hTarget, 2000))
+      DEBUGMSG("SetForegroundWindowTryHarder: TRUE");
+    else
+      DEBUGMSG("SetForegroundWindowTryHarder: FALSE");
 
     // to avoid flickering don't try again
     break;

@@ -165,3 +165,80 @@ May take up to a second for the foreground window to change:
 [5768] npp launcher: SetForegroundWindowAndWait: TRUE
 
 ===============================================================================
+'Create?' popups disable the main window however if launched twice and the
+first popup is closed it will enable the main window even if there are other
+popups.
+
+npp "foo bar" "baz qux"
+npp "foo bar" "baz qux"
+Two popups, "foo bar" doesn't exist, create it.
+Close the popup from the first command. The main window will be enabled.
+Close the popup from the second command, it will show its second popup for
+"baz qux". Close that and the first command popup for "baz qux" will show.
+
+===============================================================================
+Bizarre weirdness when a minimized window can't be restored
+
+- Checkout the commit where this was written
+- Set the verification delay to 0 and close all Notepad++ windows.
+- Check that SPI_GETFOREGROUNDLOCKTIMEOUT is enabled or set it to some value
+  SystemParametersInfo(SPI_SETFOREGROUNDLOCKTIMEOUT, 0, (void *)16250136, 0);
+- Comment out the 'Recover from race condition' block that fixes this issue.
+- Rebuild
+- Run the npp launcher with a filename that does not exist (eg npp foo)
+- If focus is stolen then observe minimized window may not restore properly.
+
+It thinks the window is maximized but it's stuck in some weird state where it
+appears minimized. Toggling the taskbar button may fix it. The problem is that
+may not always work.
+
+[6524] npp launcher: Attempting to steal focus
+[6524] npp launcher: HWND 015F0DF0 wp.showCmd: SW_SHOWMAXIMIZED
+[6524] npp launcher: HWND 015F0DF0 wp.ptMaxPosition: (-1, -1)
+[6524] npp launcher: HWND 015F0DF0 wp.ptMinPosition: (-1, -1)
+[6524] npp launcher: HWND 015F0DF0 wp.rcNormalPosition: (15, 0)-(1355, 711)
+[6524] npp launcher: HWND 015F0DF0 window_rect: (-8, -8)-(1374, 736)
+[6524] npp launcher: HWND 015F0DF0 client_rect: (0, 0)-(1366, 685)
+[6524] npp launcher: HWND 015F0DF0 MonitorFromWindow: 00010001
+[6524] npp launcher: ShowWindow SW_MINIMIZE: TRUE
+[6524] npp launcher: HWND 015F0DF0 wp.showCmd: SW_SHOWMAXIMIZED
+[6524] npp launcher: HWND 015F0DF0 wp.ptMaxPosition: (-32000, -32000)
+[6524] npp launcher: HWND 015F0DF0 wp.ptMinPosition: (-8, -8)
+[6524] npp launcher: HWND 015F0DF0 wp.rcNormalPosition: (15, 0)-(1355, 711)
+[6524] npp launcher: HWND 015F0DF0 window_rect: (-32000, -32000)-(-31840, -31961)
+[6524] npp launcher: HWND 015F0DF0 client_rect: (0, 0)-(144, 0)
+[6524] npp launcher: HWND 015F0DF0 MonitorFromWindow: 00000000
+[6524] npp launcher: SwitchToThisWindow
+[6524] npp launcher: HWND 015F0DF0 wp.showCmd: SW_SHOWMAXIMIZED
+[6524] npp launcher: HWND 015F0DF0 wp.ptMaxPosition: (-32000, -32000)
+[6524] npp launcher: HWND 015F0DF0 wp.ptMinPosition: (-8, -8)
+[6524] npp launcher: HWND 015F0DF0 wp.rcNormalPosition: (15, 0)-(1355, 711)
+[6524] npp launcher: HWND 015F0DF0 window_rect: (-32000, -32000)-(-31840, -31961)
+[6524] npp launcher: HWND 015F0DF0 client_rect: (0, 0)-(144, 0)
+[6524] npp launcher: HWND 015F0DF0 MonitorFromWindow: 00000000
+[6524] npp launcher: IsIconic Notepad++ window: FALSE
+[6524] npp launcher: IsIconic target window: FALSE
+[6524] npp launcher: GetForegroundWindow: 015F0DF0
+
+At this point SW_MAXIMIZED or another SwitchToThisWindow do nothing.
+SW_RESTORE works but since it thinks the window is already maximized it
+restores the regular size. SW_MINIMIZE followed by SW_RESTORE works to restore
+it maximized. This is likely another race condition.
+
+What it normally shows on maximized:
+SW_SHOWMAXIMIZED
+wp.ptMaxPosition: (-1, -1)
+wp.ptMinPosition: (-32000, -32000)
+wp.rcNormalPosition: (34, 0)-(1374, 711)
+window_rect: (-8, -8)-(1374, 736)
+client_rect: (0, 0)-(1366, 685)
+
+What it normally shows on minimized:
+SW_SHOWMINIMIZED
+wp.ptMaxPosition: (-1, -1)
+wp.ptMinPosition: (-32000, -32000)
+wp.rcNormalPosition: (34, 0)-(1374, 711)
+window_rect: (-32000, -32000)-(-31840, -31972)
+client_rect: (0, 0)-(0, 0)
+
+===============================================================================
