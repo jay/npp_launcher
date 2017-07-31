@@ -191,10 +191,6 @@ void SwitchToNotepadPlusPlusWindow(void)
   const DWORD interval = 100;
   const DWORD dwMilliseconds = 5000;
 
-  VOID (WINAPI *SwitchToThisWindow)(HWND hWnd, BOOL fAltTab) =
-    (VOID (WINAPI *)(HWND, BOOL))GetProcAddress(GetModuleHandleW(L"user32"),
-                                                "SwitchToThisWindow");
-
   /* 'verification_delay' is the number of milliseconds to wait for the most
      recently found Notepad++ owner window to stay the same, so that Notepad++
      has a chance to load and put itself in the foreground on its own. This
@@ -356,11 +352,9 @@ void SwitchToNotepadPlusPlusWindow(void)
       DebugDumpWindowInfo(hwnd);
     }
 
-    if(SwitchToThisWindow) {
-      SwitchToThisWindow(hwnd, TRUE);
-      DEBUGMSG("SwitchToThisWindow");
-      DebugDumpWindowInfo(hwnd);
-    }
+    SwitchToThisWindow(hwnd, TRUE);
+    DEBUGMSG("SwitchToThisWindow");
+    DebugDumpWindowInfo(hwnd);
 
     /* Recover from race condition. At the same time we minimize the window
        it's possible Notepad++ restored itself, and the window manager gets
@@ -381,8 +375,7 @@ void SwitchToNotepadPlusPlusWindow(void)
        some reason. For example I observe it doesn't always restore if hwnd is
        disabled (likely due to a popup), but SW_RESTORE does work. For details
        refer to "npp NOTES.txt" */
-    if(!SwitchToThisWindow || IsIconic(hwnd) ||
-       !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
+    if(IsIconic(hwnd) || !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
       BOOL b = ShowWindow(hwnd, SW_RESTORE);
       DEBUGMSG("ShowWindow SW_RESTORE: " << (b ? "TRUE" : "FALSE"));
       DebugDumpWindowInfo(hwnd);
