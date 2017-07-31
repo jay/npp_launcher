@@ -187,6 +187,7 @@ BOOL SetForegroundWindowTryHarder(HWND hWnd, DWORD dwMilliseconds,
    seconds. */
 void SwitchToNotepadPlusPlusWindow(void)
 {
+  BOOL beep = FALSE;
   const DWORD interval = 100;
   const DWORD dwMilliseconds = 5000;
 
@@ -252,8 +253,11 @@ void SwitchToNotepadPlusPlusWindow(void)
     if(GetClassNameW(hForeRootOwner, buf, (int)_countof(buf)) &&
        !wcscmp(classname, buf)) {
       // Notepad++ has the foreground so stop if it's enabled and not minimized
-      if(IsWindowEnabled(hFore) && !IsIconic(hFore) &&
-         !IsIconic(hForeRootOwner))
+      if(IsWindowEnabled(hFore) &&
+         !IsIconic(hFore) && IsWindowVisible(hFore) &&
+         MonitorFromWindow(hFore, MONITOR_DEFAULTTONULL) &&
+         !IsIconic(hForeRootOwner) && IsWindowVisible(hForeRootOwner) &&
+         MonitorFromWindow(hForeRootOwner, MONITOR_DEFAULTTONULL))
         break;
       hwnd = hForeRootOwner;
     }
@@ -265,6 +269,12 @@ void SwitchToNotepadPlusPlusWindow(void)
       hwnd = GetAncestor(hwnd, GA_ROOTOWNER);
       if(!hwnd)
         continue;
+    }
+
+    if(IsHungAppWindow(hwnd) || !IsWindowVisible(hwnd)) {
+      prev_hwnd = NULL;
+      prev_hwnd_start = 0;
+      continue;
     }
 
     if(hwnd != prev_hwnd) {
@@ -294,9 +304,16 @@ void SwitchToNotepadPlusPlusWindow(void)
        Since SetForegroundWindow can assign the focus to a disabled window we
        want to avoid that if possible by targeting an enabled window, but if
        not we'll use hwnd as a fallback: Notepad++ calls SetForegroundWindow on
-       its main window (hwnd) even if it's disabled. */
+       its main window (hwnd) even if it's disabled.
+
+       At this point we already have checked that hwnd is visible, associated
+       with a monitor and not hung, but hwndPop could be any of those
+       things so don't assign it to target unless it meets the same. */
     HWND hTarget = (IsWindowEnabled(hwnd) ? hwnd :
-                    (hwndPop && IsWindowEnabled(hwndPop)) ? hwndPop :
+                    (hwndPop && !IsHungAppWindow(hwndPop) &&
+                     IsWindowEnabled(hwndPop) &&
+                     MonitorFromWindow(hwndPop, MONITOR_DEFAULTTONULL) &&
+                     IsWindowVisible(hwndPop)) ? hwndPop :
                     hwnd);
 
     DEBUGMSG("Target window: " << hTarget);
@@ -351,7 +368,6 @@ void SwitchToNotepadPlusPlusWindow(void)
        it's not visible on any monitor (-32000, -32000). In that case minimize
        the window again so that it can be restored properly. For details refer
        to "npp NOTES.txt" */
-    BOOL beep = FALSE;
     if(!IsIconic(hwnd) && !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
       DEBUGMSG("Minimizing again to recover from race condition");
       BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
@@ -372,9 +388,6 @@ void SwitchToNotepadPlusPlusWindow(void)
       DebugDumpWindowInfo(hwnd);
     }
 
-    if(beep)
-      Beep(750, 300);
-
     DEBUGMSG("IsIconic Notepad++ window: " <<
              (IsIconic(hwnd)? "TRUE" : "FALSE"));
     DEBUGMSG("IsIconic target window: " <<
@@ -391,12 +404,42 @@ void SwitchToNotepadPlusPlusWindow(void)
     // Try for up to 2 seconds to make hTarget the foreground window
     if(SetForegroundWindowTryHarder(hTarget, 2000))
       DEBUGMSG("SetForegroundWindowTryHarder: TRUE");
-    else
+    else {
       DEBUGMSG("SetForegroundWindowTryHarder: FALSE");
+
+      /* 2 seconds have passed so check that the windows are still valid and
+         then try a straight minimize and restore as a last resort */
+      if(IsWindow(hTarget) && IsWindowVisible(hTarget) &&
+         !IsHungAppWindow(hTarget) &&
+         hwnd == GetAncestor(hTarget, GA_ROOTOWNER) &&
+         IsWindowVisible(hwnd) && !IsHungAppWindow(hwnd)) {
+        BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
+        DEBUGMSG("ShowWindow SW_MINIMIZE: " << (b ? "TRUE" : "FALSE"));
+        DebugDumpWindowInfo(hwnd);
+
+        if(b || IsIconic(hwnd)) {
+          b = ShowWindow(hwnd, SW_RESTORE);
+          DEBUGMSG("ShowWindow SW_RESTORE: " << (b ? "TRUE" : "FALSE"));
+          DebugDumpWindowInfo(hwnd);
+        }
+
+        if(SetForegroundWindow(hTarget))
+          DEBUGMSG("SetForegroundWindow: TRUE");
+        else
+          DEBUGMSG("SetForegroundWindow: FALSE");
+
+        //beep = TRUE;
+      }
+    }
+
+    DEBUGMSG("GetForegroundWindow: " << GetForegroundWindow());
 
     // to avoid flickering don't try again
     break;
   }
+
+  if(beep)
+    Beep(750, 300);
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, const PWSTR cmdline, int)
