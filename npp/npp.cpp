@@ -276,7 +276,6 @@ void SwitchToNotepadPlusPlusWindow(void)
     if(hwnd != prev_hwnd) {
       prev_hwnd = hwnd;
       prev_hwnd_start = GetTickCount();
-      continue;
     }
 
     if(verification_delay > (GetTickCount() - prev_hwnd_start))
