@@ -200,7 +200,8 @@ void SwitchToNotepadPlusPlusWindow(void)
      user thinks they have to. */
   const DWORD verification_delay = 1000;
   HWND prev_hwnd = NULL;  /* The most recently found Notepad++ owner window */
-  DWORD prev_hwnd_start = 0;  /* The tickcount when prev_hwnd was set */
+  UINT prev_hwnd_showstate = 0;  /* The SW_xxx state when prev_hwnd was set */
+  DWORD prev_hwnd_tickcount = 0;  /* The tickcount when prev_hwnd was set */
 
   /* The maximum wait time is a rough estimate and there are various waits that
      may push it over a little. At a minimum enough time is needed so that the
@@ -221,7 +222,7 @@ void SwitchToNotepadPlusPlusWindow(void)
     DWORD needed;
 
     if(prev_hwnd) {
-      DWORD x = (GetTickCount() - prev_hwnd_start);
+      DWORD x = (GetTickCount() - prev_hwnd_tickcount);
       needed = (verification_delay > x ? verification_delay - x : 0);
     }
     else
@@ -267,18 +268,25 @@ void SwitchToNotepadPlusPlusWindow(void)
         continue;
     }
 
-    if(IsHungAppWindow(hwnd) || !IsWindowVisible(hwnd)) {
+    WINDOWPLACEMENT wp = { sizeof(wp), };
+    UINT hwnd_showstate = GetWindowPlacement(hwnd, &wp) ? wp.showCmd : 0;
+
+    if(IsHungAppWindow(hwnd) || !IsWindowVisible(hwnd) ||
+       !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL) ||
+       (hwnd == prev_hwnd && hwnd_showstate != prev_hwnd_showstate)) {
       prev_hwnd = NULL;
-      prev_hwnd_start = 0;
+      prev_hwnd_showstate = 0;
+      prev_hwnd_tickcount = 0;
       continue;
     }
 
     if(hwnd != prev_hwnd) {
       prev_hwnd = hwnd;
-      prev_hwnd_start = GetTickCount();
+      prev_hwnd_showstate = hwnd_showstate;
+      prev_hwnd_tickcount = GetTickCount();
     }
 
-    if(verification_delay > (GetTickCount() - prev_hwnd_start))
+    if(verification_delay > (GetTickCount() - prev_hwnd_tickcount))
       continue;
 
     DEBUGMSG("GetForegroundWindow: " << hFore <<
