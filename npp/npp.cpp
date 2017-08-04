@@ -120,67 +120,301 @@ void DebugDumpWindowInfo(HWND hWnd)
 #endif // USE_DEBUGMSG
 }
 
-/*
-Attempt to set the foreground window for a short period of time.
-
-This function calls SetForegroundWindow one or more times for up to
-dwMilliseconds. Each call is separated by a small interval of sleep.
-
-Return TRUE (success) as soon as SetForegroundWindow returns TRUE; otherwise
-return FALSE when dwMilliseconds has passed. Behavior may be modified by the
-flags below.
-
-Flags
------
-
-SFW_CONFIRM:
-After a successful call to SetForegroundWindow do not consider it successful
-or return early unless GetForegroundWindow == hWnd.
-
-SFW_ENFORCE:
-Set and enforce hWnd as the foreground window by calling SetForegroundWindow
-when GetForegroundWindow != hwnd, for the entire dwMilliseconds.
-Return the result of the last GetForegroundWindow == hWnd.
-*/
-BOOL SetForegroundWindowTryHarder(HWND hWnd, DWORD dwMilliseconds,
-                                  DWORD dwFlags = 0)
+HWND InitHelperWindow()
 {
-  const DWORD interval = 100;
+  const TCHAR *window_class_name =
+    TEXT("npp launcher window {84C74316-2E90-44BE-808E-C27F57BDF77B}");
 
-#define SFW_CONFIRM  (1<<0)
-#define SFW_ENFORCE  (1<<1)
+  WNDCLASS wc;
+  wc.style         = CS_NOCLOSE;
+  wc.lpfnWndProc   = DefWindowProc;
+  wc.cbClsExtra    = 0;
+  wc.cbWndExtra    = 0;
+  wc.hInstance     = GetModuleHandle(NULL);
+  wc.hIcon         = NULL;
+  wc.hCursor       = NULL;
+  wc.hbrBackground = NULL;
+  wc.lpszMenuName  = NULL;
+  wc.lpszClassName = window_class_name;
+
+  ATOM atomWindowClass = RegisterClass(&wc);
+  if(!atomWindowClass) {
+    DWORD gle = GetLastError();
+    DEBUGMSG("RegisterClass() failed to make window class " <<
+             "\"" << window_class_name << "\"" <<
+             " with error code " << gle << ".");
+    return NULL;
+  }
+
+  HWND hwnd = CreateWindowEx(0, window_class_name, window_class_name,
+                             WS_POPUP | WS_VISIBLE, 0, 0, 0, 0,
+                             NULL, NULL, NULL, NULL);
+  if(!hwnd) {
+    DWORD gle = GetLastError();
+    DEBUGMSG("CreateWindowEx() failed to make window " <<
+             "\"" << window_class_name << "\"" <<
+             " with error code " << gle << ".");
+    return NULL;
+  }
+
+  return hwnd;
+}
+
+// StealFocus parameters
+struct sfparam {
+  // The window to switch to via ALT+TAB simulation
+  HWND hSwitchToThis;
+
+  /* If hSwitchToThis is disabled and is the root owner of an enabled popup
+     then set the foreground to that popup instead of hSwitchToThis. */
+#define SFP_IF_DISABLED_PREFER_ENABLED_POPUP (1<<0)
+  DWORD dwFlags;
+
+  // How many milliseconds to attempt stealing the focus before giving up
+  DWORD dwMilliseconds;
+};
+
+string sfparam_flags_to_str(DWORD flags)
+{
+  stringstream ss;
+
+#define EXTRACT_SFP_FLAG(f) \
+  if((flags & f)) { \
+    if(ss.tellp()) \
+      ss << " | "; \
+    ss << #f; \
+    flags &= ~f; \
+  }
+
+  EXTRACT_SFP_FLAG(SFP_IF_DISABLED_PREFER_ENABLED_POPUP);
+
+  if(flags) {
+    if(ss.tellp())
+      ss << " | ";
+    ss << "0x" << hex << flags;
+  }
+
+  if(!ss.tellp())
+    ss << "<none>";
+
+  return ss.str();
+}
+
+/*
+Attempt to steal the focus.
+Switch to window hSwitchToThis in struct sfparam and set the foreground window
+to either that window or elsewhere depending on the flags.
+Return nonzero if target was successfully set as or is the foreground window.
+*/
+DWORD WINAPI StealFocus(LPVOID lpParameter)
+{
+#define IF_FALSE_GOTO_CLEANUP(f) \
+  if(!(f)) { \
+    DEBUGMSG(#f ": FALSE"); \
+    goto cleanup; \
+  }
+
+#define IF_HWND_BAD_GOTO_CLEANUP(h) \
+  do { \
+    IF_FALSE_GOTO_CLEANUP(IsWindow(h)); \
+    IF_FALSE_GOTO_CLEANUP(IsWindowVisible(h)); \
+    IF_FALSE_GOTO_CLEANUP(!IsHungAppWindow(h)); \
+  } WHILE_FALSE
+
+#define IF_VALIDATION_FAILS_GOTO_CLEANUP() \
+  do { \
+    IF_HWND_BAD_GOTO_CLEANUP(w->hSwitchToThis); \
+    if(hForegroundToThis) { \
+      IF_HWND_BAD_GOTO_CLEANUP(hForegroundToThis); \
+      if(w->hSwitchToThis != GetAncestor(hForegroundToThis, GA_ROOTOWNER)) { \
+        DEBUGMSG("w->hSwitchToThis no longer owns hForegroundToThis"); \
+        goto cleanup; \
+      } \
+    } \
+  } WHILE_FALSE
+
+#define PROCESS_WINDOW_MESSAGES_NOSLEEP() \
+  do { \
+    for(MSG msg; PeekMessage(&msg, NULL, 0, 0, PM_REMOVE);) { \
+      TranslateMessage(&msg); \
+      DispatchMessage(&msg); \
+    } \
+  } WHILE_FALSE
+
+#define PROCESS_WINDOW_MESSAGES() \
+  do { \
+    PROCESS_WINDOW_MESSAGES_NOSLEEP(); \
+    Sleep(1); \
+    PROCESS_WINDOW_MESSAGES_NOSLEEP(); \
+  } WHILE_FALSE
+
+  BOOL ret = FALSE;
+
+  const struct sfparam *w = (struct sfparam *)lpParameter;
+
+  if(!w) {
+    DEBUGMSG("SetFocus invalid parameter");
+    return FALSE;
+  }
+
+  DEBUGMSG("Attempting to steal focus");
+  DEBUGMSG("w->hSwitchToThis: " << w->hSwitchToThis);
+  DEBUGMSG("w->dwFlags: " << sfparam_flags_to_str(w->dwFlags).c_str());
+  DEBUGMSG("w->dwMilliseconds: " << w->dwMilliseconds);
+
+  HWND hHelper = InitHelperWindow();
+
+  if(!hHelper) {
+    DEBUGMSG("SetFocus helper window failed initialization");
+    return FALSE;
+  }
+
+  DEBUGMSG("hHelper: " << hHelper);
 
   DWORD start = GetTickCount();
-  BOOL ret = 0;
-  DWORD gle = 0;
+  DWORD max_wait = w->dwMilliseconds;
 
-  SetLastError(0);
+  // Sleep(interval) at the beginning of each iteration
+  DWORD interval = 100;
 
-  for(DWORD elapsed = 0; elapsed <= dwMilliseconds;
+  // The window to set to the foreground, unknown at this point
+  HWND hForegroundToThis = NULL;
+
+  IF_VALIDATION_FAILS_GOTO_CLEANUP();
+
+  DebugDumpWindowInfo(w->hSwitchToThis);
+
+  BOOL firstrun = TRUE;
+  BOOL restored = FALSE;
+
+  for(DWORD elapsed = 0; elapsed <= max_wait;
       elapsed = GetTickCount() - start) {
     /* GetTickCount operates at the resolution of the system clock and it may
        return the same result on subsequent calls. */
-    DWORD remaining = dwMilliseconds - elapsed;
+    DWORD remaining = max_wait - elapsed;
 
-    if(!ret) {
-      ret = SetForegroundWindow(hWnd);
-      gle = GetLastError();
+    if(firstrun) {
+      firstrun = FALSE;
+      PROCESS_WINDOW_MESSAGES();
+    }
+    else {
+      PROCESS_WINDOW_MESSAGES_NOSLEEP();
+      Sleep(remaining < interval ? remaining : interval);
+      PROCESS_WINDOW_MESSAGES_NOSLEEP();
     }
 
-    for(int i = 0; i < 2; ++i) {
-      if((dwFlags & (SFW_CONFIRM | SFW_ENFORCE)))
-        ret = (GetForegroundWindow() == hWnd);
+    IF_VALIDATION_FAILS_GOTO_CLEANUP();
 
-      if(ret && !(dwFlags & SFW_ENFORCE))
-        return TRUE;
+    // Check if the windows are in a temporarily bad/transition state
+    if(!MonitorFromWindow(w->hSwitchToThis, MONITOR_DEFAULTTONULL) ||
+       (hForegroundToThis &&
+        !MonitorFromWindow(hForegroundToThis, MONITOR_DEFAULTTONULL)))
+      continue;
 
-      if(!i)
-        Sleep(remaining < interval ? remaining : interval);
+    /* Restore the Notepad++ window if it is minimized. In practice this
+       shouldn't be necessary because when Notepad++ is launched it restores
+       its window. Typically if a restoration is needed SwitchToThisWindow will
+       do it but that doesn't seem to work if the window is disabled, and in
+       our case sometimes it is. */
+    if(!restored) {
+      if(IsIconic(w->hSwitchToThis)) {
+        ShowWindow(w->hSwitchToThis, SW_RESTORE);
+        DEBUGMSG("ShowWindow(w->hSwitchToThis, SW_RESTORE)");
+        DebugDumpWindowInfo(w->hSwitchToThis);
+
+        while(IsIconic(w->hSwitchToThis) ||
+              !MonitorFromWindow(w->hSwitchToThis, MONITOR_DEFAULTTONULL)) {
+          elapsed = GetTickCount() - start;
+
+          if(elapsed > max_wait) {
+            DEBUGMSG("Ran out of time while waiting for window to restore");
+            goto cleanup;
+          }
+
+          remaining = max_wait - elapsed;
+
+          PROCESS_WINDOW_MESSAGES_NOSLEEP();
+          Sleep(remaining < interval ? remaining : interval);
+          PROCESS_WINDOW_MESSAGES_NOSLEEP();
+
+          IF_VALIDATION_FAILS_GOTO_CLEANUP();
+        }
+
+        DebugDumpWindowInfo(w->hSwitchToThis);
+      }
+
+      restored = TRUE;
+      PROCESS_WINDOW_MESSAGES();
+      IF_VALIDATION_FAILS_GOTO_CLEANUP();
     }
+
+    if(!hForegroundToThis) {
+      SwitchToThisWindow(w->hSwitchToThis, TRUE);
+      DEBUGMSG("SwitchToThisWindow(w->hSwitchToThis, TRUE)");
+      DebugDumpWindowInfo(w->hSwitchToThis);
+
+      /* GW_ENABLEDPOPUP is documented to return the passed in hwnd if there's
+         no popup, but I've found it can return NULL even if hwnd is enabled,
+         or minimized and the popups are missing visibility bit. */
+      HWND hPopup = GetWindow(w->hSwitchToThis, GW_ENABLEDPOPUP);
+      DEBUGMSG("w->hSwitchToThis: " << w->hSwitchToThis <<
+                " (GW_ENABLEDPOPUP: " << hPopup << ")");
+
+      /* Target an enabled Notepad++ window, if possible:
+         Some enabled popups such as the "Create it?" message box disable hwnd.
+         Since SetForegroundWindow can assign the focus to a disabled window we
+         want to avoid that if possible by targeting an enabled window. */
+      if((w->dwFlags & SFP_IF_DISABLED_PREFER_ENABLED_POPUP) &&
+         !IsWindowEnabled(w->hSwitchToThis) &&
+         hPopup && !IsHungAppWindow(hPopup) &&
+         IsWindowEnabled(hPopup) && IsWindowVisible(hPopup) &&
+         MonitorFromWindow(hPopup, MONITOR_DEFAULTTONULL) &&
+         w->hSwitchToThis == GetAncestor(hPopup, GA_ROOTOWNER)) {
+        hForegroundToThis = hPopup;
+      }
+      else
+        hForegroundToThis = w->hSwitchToThis;
+
+      DEBUGMSG("hForegroundToThis: " << hForegroundToThis);
+      DebugDumpWindowInfo(hForegroundToThis);
+
+      PROCESS_WINDOW_MESSAGES();
+      IF_VALIDATION_FAILS_GOTO_CLEANUP();
+    }
+
+    HWND hFore = GetForegroundWindow();
+    DEBUGMSG("GetForegroundWindow: " << hFore <<
+             (hFore == hHelper ? " (The foreground is hHelper)" :
+                                 " (The foreground is NOT hHelper)"));
+
+    DWORD lt;
+    if(SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lt, 0)) {
+      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: " << lt <<
+               " (" << lt / 1000 << " seconds)");
+    }
+    else
+      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: <unavailable>");
+
+    ret = SetForegroundWindow(hForegroundToThis);
+    DEBUGMSG("SetForegroundWindow(hForegroundToThis): " <<
+              (ret ? "TRUE" : "FALSE"));
+    if(ret)
+      break;
+
+    // Attempt to steal the foreground
+    PROCESS_WINDOW_MESSAGES();
+    ShowWindow(hHelper, SW_SHOWMINNOACTIVE);
+    PROCESS_WINDOW_MESSAGES();
+    ShowWindow(hHelper, SW_RESTORE);
+    IF_VALIDATION_FAILS_GOTO_CLEANUP();
   }
 
-  SetLastError(gle);
-  return ret;
+cleanup:
+  PROCESS_WINDOW_MESSAGES();
+  DestroyWindow(hHelper);
+  PROCESS_WINDOW_MESSAGES();
+
+  return ret || GetForegroundWindow() == hForegroundToThis;
 }
 
 /* Try to switch to Notepad++ for up to approximately dwMilliseconds + several
@@ -292,145 +526,25 @@ void SwitchToNotepadPlusPlusWindow(void)
     DEBUGMSG("GetForegroundWindow: " << hFore <<
              " (GA_ROOTOWNER: " << hForeRootOwner << ")");
 
-    HWND hwndPop = GetWindow(hwnd, GW_ENABLEDPOPUP);
+    DEBUGMSG("Notepad++ window: " << hwnd);
 
-    DEBUGMSG("Notepad++ window: " << hwnd <<
-             " (GW_ENABLEDPOPUP: " << hwndPop << ")");
-
-    /* GW_ENABLEDPOPUP is documented to return hwnd if there's no popup, but
-       I've found it can return NULL even if hwnd is enabled. */
-    if(!hwndPop && IsWindowEnabled(hwnd))
-      hwndPop = hwnd;
-
-    /* Target an enabled Notepad++ window, if possible:
-       Some enabled popups such as the "Create it?" message box disable hwnd.
-       Since SetForegroundWindow can assign the focus to a disabled window we
-       want to avoid that if possible by targeting an enabled window, but if
-       not we'll use hwnd as a fallback: Notepad++ calls SetForegroundWindow on
-       its main window (hwnd) even if it's disabled.
-
-       At this point we already have checked that hwnd is visible, associated
-       with a monitor and not hung, but hwndPop could be any of those
-       things so don't assign it to target unless it meets the same. */
-    HWND hTarget = (IsWindowEnabled(hwnd) ? hwnd :
-                    (hwndPop && !IsHungAppWindow(hwndPop) &&
-                     IsWindowEnabled(hwndPop) &&
-                     MonitorFromWindow(hwndPop, MONITOR_DEFAULTTONULL) &&
-                     IsWindowVisible(hwndPop)) ? hwndPop :
-                    hwnd);
-
-    DEBUGMSG("Target window: " << hTarget);
-
-    if(!hTarget)
+    // steal focus: attempt to bypass setforegroundwindow restrictions
+    sfparam w = {};
+    w.hSwitchToThis = hwnd;
+    w.dwFlags = SFP_IF_DISABLED_PREFER_ENABLED_POPUP;
+    w.dwMilliseconds = 2000;
+    HANDLE hThread = CreateThread(NULL, 0, StealFocus, (LPVOID)&w, 0, NULL);
+    if(!hThread) {
+      DWORD gle = GetLastError();
+      DEBUGMSG("CreateThread failed, error " << gle);
       break;
-
-    DEBUGMSG("IsWindowEnabled: " <<
-             (IsWindowEnabled(hTarget) ? "TRUE" : "FALSE"));
-
-    DWORD lt = (DWORD)-1;
-    if(SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lt, 0))
-      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: " << lt <<
-               " (" << lt / 1000 << " seconds)");
-    else
-      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: <unavailable>");
-
-    /* Enforce hTarget as the foreground window for 100ms.
-       This is to remedy a race condition with Notepad++ where it may set the
-       disabled main window of a previously existing mono-instance to the
-       foreground while at the same time this program is trying to set the
-       foreground to the Notepad++ enabled popup that has disabled the main
-       window. */
-    if(SetForegroundWindowTryHarder(hTarget, 100, SFW_ENFORCE)) {
-      DEBUGMSG("SetForegroundWindowTryHarder SFW_ENFORCE: TRUE");
-      if(!IsIconic(hwnd) && !IsIconic(hTarget))
-        break;
     }
-    else
-      DEBUGMSG("SetForegroundWindowTryHarder SFW_ENFORCE: FALSE");
-
-    // steal focus: minimize and then restore in alt+tab style.
-    DEBUGMSG("Attempting to steal focus");
-
-    DebugDumpWindowInfo(hwnd);
-
-    if(!IsIconic(hwnd)) {
-      BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
-      DEBUGMSG("ShowWindow SW_MINIMIZE: " << (b ? "TRUE" : "FALSE"));
-      DebugDumpWindowInfo(hwnd);
-    }
-
-    SwitchToThisWindow(hwnd, TRUE);
-    DEBUGMSG("SwitchToThisWindow");
-    DebugDumpWindowInfo(hwnd);
-
-    /* Recover from race condition. At the same time we minimize the window
-       it's possible Notepad++ restored itself, and the window manager gets
-       confused and thinks it's not minimized even though it somewhat is since
-       it's not visible on any monitor (-32000, -32000). In that case minimize
-       the window again so that it can be restored properly. For details refer
-       to "npp NOTES.txt" */
-    if(!IsIconic(hwnd) && !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
-      DEBUGMSG("Minimizing again to recover from race condition");
-      BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
-      DEBUGMSG("ShowWindow SW_MINIMIZE: " << (b ? "TRUE" : "FALSE"));
-      DebugDumpWindowInfo(hwnd);
-      //beep = TRUE;
-    }
-
-    /* Restore the window if necessary. SwitchToThisWindow should have already
-       done this, however it's possible that it can't restore the window for
-       some reason. For example I observe it doesn't always restore if hwnd is
-       disabled (likely due to a popup), but SW_RESTORE does work. For details
-       refer to "npp NOTES.txt" */
-    if(IsIconic(hwnd) || !MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)) {
-      BOOL b = ShowWindow(hwnd, SW_RESTORE);
-      DEBUGMSG("ShowWindow SW_RESTORE: " << (b ? "TRUE" : "FALSE"));
-      DebugDumpWindowInfo(hwnd);
-    }
-
-    DEBUGMSG("IsIconic Notepad++ window: " <<
-             (IsIconic(hwnd)? "TRUE" : "FALSE"));
-    DEBUGMSG("IsIconic target window: " <<
-             (IsIconic(hTarget)? "TRUE" : "FALSE"));
-    DEBUGMSG("GetForegroundWindow: " << GetForegroundWindow());
-
-    lt = (DWORD)-1;
-    if(SystemParametersInfo(SPI_GETFOREGROUNDLOCKTIMEOUT, 0, &lt, 0))
-      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: " << lt <<
-               " (" << lt / 1000 << " seconds)");
-    else
-      DEBUGMSG("SPI_GETFOREGROUNDLOCKTIMEOUT: <unavailable>");
-
-    // Try for up to 2 seconds to make hTarget the foreground window
-    if(SetForegroundWindowTryHarder(hTarget, 2000))
-      DEBUGMSG("SetForegroundWindowTryHarder: TRUE");
-    else {
-      DEBUGMSG("SetForegroundWindowTryHarder: FALSE");
-
-      /* 2 seconds have passed so check that the windows are still valid and
-         then try a straight minimize and restore as a last resort */
-      if(IsWindow(hTarget) && IsWindowVisible(hTarget) &&
-         !IsHungAppWindow(hTarget) &&
-         hwnd == GetAncestor(hTarget, GA_ROOTOWNER) &&
-         IsWindowVisible(hwnd) && !IsHungAppWindow(hwnd)) {
-        BOOL b = ShowWindow(hwnd, SW_MINIMIZE);
-        DEBUGMSG("ShowWindow SW_MINIMIZE: " << (b ? "TRUE" : "FALSE"));
-        DebugDumpWindowInfo(hwnd);
-
-        if(b || IsIconic(hwnd)) {
-          b = ShowWindow(hwnd, SW_RESTORE);
-          DEBUGMSG("ShowWindow SW_RESTORE: " << (b ? "TRUE" : "FALSE"));
-          DebugDumpWindowInfo(hwnd);
-        }
-
-        if(SetForegroundWindow(hTarget))
-          DEBUGMSG("SetForegroundWindow: TRUE");
-        else
-          DEBUGMSG("SetForegroundWindow: FALSE");
-
-        //beep = TRUE;
-      }
-    }
+    WaitForSingleObject(hThread, INFINITE);
+    DWORD trc;
+    if(!GetExitCodeThread(hThread, &trc))
+      trc = FALSE;
+    CloseHandle(hThread);
+    DEBUGMSG("StealFocus: " << (trc ? "TRUE" : "FALSE"));
 
     DEBUGMSG("GetForegroundWindow: " << GetForegroundWindow());
 
