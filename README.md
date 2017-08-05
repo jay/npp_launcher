@@ -6,7 +6,9 @@ npp launcher - Execute Notepad++ in the context of the user's explorer
 ### Usage
 
 Usage: `npp [[arg]...]`  
-Execute Notepad++ in the context of the user's explorer.
+Execute
+[Notepad++](https://notepad-plus-plus.org/)
+in the context of the user's explorer.
 
 npp is useful if you are running as administrator and you want to execute
 Notepad++ in the context of the user's explorer (eg it will de-elevate the
