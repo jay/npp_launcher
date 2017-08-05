@@ -432,7 +432,7 @@ void SwitchToNotepadPlusPlusWindow(void)
      multi-instance less likely. The delay should be short because if Notepad++
      doesn't put itself in the foreground then we want to step in before the
      user thinks they have to. */
-  const DWORD verification_delay = 1000;
+  const DWORD verification_delay = 500;
   HWND prev_hwnd = NULL;  /* The most recently found Notepad++ owner window */
   UINT prev_hwnd_showstate = 0;  /* The SW_xxx state when prev_hwnd was set */
   DWORD prev_hwnd_tickcount = 0;  /* The tickcount when prev_hwnd was set */
