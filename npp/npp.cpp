@@ -180,7 +180,7 @@ string sfparam_flags_to_str(DWORD flags)
 
 #define EXTRACT_SFP_FLAG(f) \
   if((flags & f)) { \
-    if(ss.tellp()) \
+    if(ss.tellp() > 0) \
       ss << " | "; \
     ss << #f; \
     flags &= ~f; \
@@ -189,12 +189,12 @@ string sfparam_flags_to_str(DWORD flags)
   EXTRACT_SFP_FLAG(SFP_IF_DISABLED_PREFER_ENABLED_POPUP);
 
   if(flags) {
-    if(ss.tellp())
+    if(ss.tellp() > 0)
       ss << " | ";
     ss << "0x" << hex << flags;
   }
 
-  if(!ss.tellp())
+  if(ss.tellp() <= 0)
     ss << "<none>";
 
   return ss.str();
