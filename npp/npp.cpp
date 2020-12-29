@@ -54,6 +54,28 @@ wofstream logfile;
 #endif
 
 
+string HResultStr(HRESULT hr)
+{
+  switch(hr) {
+  case 0x00000000: return "S_OK";
+  case 0x00000001: return "S_FALSE";
+  case 0x80004001: return "E_NOTIMPL";
+  case 0x80004002: return "E_NOINTERFACE";
+  case 0x80004003: return "E_POINTER";
+  case 0x80004004: return "E_ABORT";
+  case 0x80004005: return "E_FAIL";
+  case 0x8000FFFF: return "E_UNEXPECTED";
+  case 0x80070005: return "E_ACCESSDENIED";
+  case 0x80070006: return "E_HANDLE";
+  case 0x8007000E: return "E_OUTOFMEMORY";
+  case 0x80070057: return "E_INVALIDARG";
+  }
+
+  stringstream ss;
+  ss << hex << "0x" << hr;
+  return ss.str();
+}
+
 /* system time in format: Tue May 16 03:24:31.123 PM */
 string SystemTimeStr(const SYSTEMTIME *t)
 {
@@ -575,14 +597,23 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, const PWSTR cmdline, int)
       logfile.open(path, wofstream::app);
   }
 
-  if(!GetCurrentDir_ThreadUnsafe(&dir))
+  if(!GetCurrentDir_ThreadUnsafe(&dir)) {
+    DWORD gle = GetLastError();
+    DEBUGMSG("GetCurrentDir_ThreadUnsafe failed, error " << gle);
     return -1;
+  }
 
   hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   if(SUCCEEDED(hr)) {
     hr = ShellExecInExplorerProcess(L"notepad++", cmdline, dir);
+    if(FAILED(hr))
+      DEBUGMSG("ShellExecInExplorerProcess notepad++ failed, error " <<
+               HResultStr(hr).c_str() << ", dir: " << dir <<
+               ", args: " << cmdline);
     CoUninitialize();
   }
+  else
+    DEBUGMSG("CoInitializeEx failed, error " << HResultStr(hr).c_str());
 
   free(dir);
   dir = NULL;
