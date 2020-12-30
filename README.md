@@ -36,6 +36,10 @@ synchronously and once it terminates its exit code will be put in %ERRORLEVEL%.
 None of this has any bearing on how npp executes Notepad++, which is always
 asynchronous.
 
+### Known issues
+
+See https://github.com/jay/ExecInExplorer#known-issues
+
 ### License
 
 [MIT license](https://github.com/jay/npp_launcher/blob/master/LICENSE)
