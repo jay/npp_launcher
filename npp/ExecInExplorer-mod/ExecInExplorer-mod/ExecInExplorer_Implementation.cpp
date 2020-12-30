@@ -35,9 +35,12 @@ HRESULT GetShellViewForDesktop(REFIID riid, void **ppv)
     HRESULT hr = CoCreateInstance(CLSID_ShellWindows, NULL, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&psw));
     if (SUCCEEDED(hr))
     {
-        HWND hwnd;
+        HWND hwnd = NULL;
         IDispatch* pdisp;
         VARIANT vEmpty = {}; // VT_EMPTY
+        /* Note HWND the upper 32-bits aren't written by FindWindowSW but that
+           is ok because Windows API ignores upper 32 bits of HWND. Futhermore
+           the HWND written is the progman window, not GetDesktopWindow(). */
         if (S_OK == psw->FindWindowSW(&vEmpty, &vEmpty, SWC_DESKTOP, (long*)&hwnd, SWFO_NEEDDISPATCH, &pdisp))
         {
             IShellBrowser *psb;
