@@ -603,6 +603,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, const PWSTR cmdline, int)
     return -1;
   }
 
+  /* Execute notepad++ in the context of the user running explorer. Security
+     software may stop this due to its behavior. */
   hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
   if(SUCCEEDED(hr)) {
     hr = ShellExecInExplorerProcess(L"notepad++", cmdline, dir);
